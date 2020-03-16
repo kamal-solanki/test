@@ -1,0 +1,38 @@
+################################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: azure-variables
+#
+# This template contains variables that are shared acrosss all Azure related
+# pipelines. These variables can be overwritten in the pipelines.
+################################################################################
+
+variables:
+- template: variables.yml
+
+  # Specifies the primary prefix of azure resources.
+- name: resourcePrimaryPrefix
+  value: '$(environmentPrefix)-$(projectName)'
+
+  # Specifies the name of the primary Integration Account.
+- name: primaryIntegrationAccountName
+  value: '$(resourcePrimaryPrefix)-IA01'
+
+  # Specifies the name of the primary Storage Account.
+- name: primaryStorageAccountName
+  value: 'pwsh: "$(environmentPrefix)$(projectName)SA01".ToLower()'
+
+  # Specifies the name of the primary Storage Account.
+- name: primaryEventHubsNamespaceName
+  value: '$(environmentPrefix)EVENTHUBS01'
+
+  # Specifies the name of the primary Consumption Plan.
+- name: primaryConsumptionPlanName
+  value: '$(resourcePrimaryPrefix)-CONSUMPTIONPLAN-PS01'
+
+  # Specifies the primary Azure region.
+- name: primaryAzureRegion
+  value: 'canadaeast'
+
+  # Specifies the secondary Azure region.
+- name: secondaryAzureRegion
+  value: 'canadacentral'

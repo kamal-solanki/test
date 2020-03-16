@@ -1,0 +1,121 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: data-model-cd-stage
+#
+# This generic template defines the steps required to deploy a data model.
+# It is intended to be used by all data model pipeleines.
+###############################################################################
+
+parameters:
+  # Specifies the agent pool to use for deployment activities.
+- name: pool
+  type: object
+  default:
+    vmImage: 'ubuntu-latest'
+
+  # Specifies the stage details for the pipeline (e.g. name and id).
+- name: stage
+  type: object
+
+  # Specifies the Azure Service Connection to use when authenticating with the Azure SQL server.
+- name: azServiceConnection
+  type: string
+
+  # Specifies the name of the Azure SQL server to deploy the DACPAC artifact to.
+- name: serverName
+  type: string
+  default: $(serverName)
+
+  # Specifies the name of the Azure SQL database to deploy the DACPAC artifact to.
+- name: databaseName
+  type: string
+  default: $(databaseName)
+
+  # Specifies the file path of the DACPAC artifact to deploy.
+- name: dacpacFilePath
+  type: string
+  default: $(dacpacFilePath)
+
+  # Specifies the list of steps to execute post deployment of the data model.
+  # If this parameter is empty, then no post deployment steps are executed.
+- name: postDeploymentSteps
+  type: stepList
+  default: []
+
+  # Specifies the prefix of the environment.
+  # This is used to construct environment specific parameters.
+- name: environmentPrefix
+  type: string
+
+  # Specifies the variables for the pipeine.
+- name: variables
+  type: object
+  default: {}
+
+################################################################################
+# DEPLOY STAGE
+################################################################################
+
+stages:
+
+  # Deployment stage details
+- ${{ insert }}: ${{ parameters.stage }}
+
+  ################################################################################
+  # STAGE VARIABLES
+  ################################################################################
+
+  variables:
+    environmentPrefix: ${{ parameters.environmentPrefix }}
+    ${{ insert }}: ${{ parameters.variables }}
+
+  jobs:
+  - deployment: deploy
+    displayName: 'Deploy'
+
+    # The agent pool associated with the deployment.
+    pool:
+      ${{ insert }}: ${{ parameters.pool }}
+
+    # The environment or its resource that is targeted by the deployment job.
+    environment: ${{ parameters.stage.displayName }}
+    strategy:
+      # Default deployment strategy. Simple run once execution.
+      runOnce:
+        # The deployment block of the pipeline.
+        deploy:
+          # The steps that make up the deployment.
+          steps:
+            # Download DACPAC Artifact.
+            # This step downloads the DACPAC artifact that needs to be deployed.
+          - download: current
+            displayName: 'Download DAPAC Artifact'
+
+            # Transforms pipelines variables using PowerShell expressions.
+          - task: PowerShell@2
+            displayName: 'Transform Pipeline Variables'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Get-ChildItem Env:* | % {
+                  if ($_.Value.StartsWith("pwsh: ")) {
+                    $result = Invoke-Expression $_.Value.Replace("pwsh: ", "")
+                    if ($result -ne $_.Value) {
+                      Write-Host ("##vso[task.setvariable variable=$($_.Name);]$result")
+                    }
+                  }
+                }
+              pwsh: true
+
+          # Deploys the DACPAC to the Azure SQL Server.
+          # NOTE: This is a custom built task that facilitates the deployment of DACPAC artifacts.
+          - task: AzureSqlDeploymentCustom@1
+            displayName: 'Deploy DACPAC Artifact'
+            inputs:
+              azureServiceConnection: ${{ parameters.azServiceConnection }}
+              serverName: ${{ parameters.serverName }}
+              databaseName: ${{ parameters.databaseName }}
+              dacpacFileName: ${{ parameters.dacpacFilePath }}
+
+            # Execute post-deployment steps, if required.
+          - ${{ parameters.postDeploymentSteps }}

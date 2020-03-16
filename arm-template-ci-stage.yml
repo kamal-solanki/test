@@ -1,0 +1,96 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: arm-template-ci-stage
+#
+# This generic template defines the steps required to package and validate an
+# ARM template. It is intended to be used by all ARM template pipeleines.
+###############################################################################
+
+parameters:
+  # Specifies the agent pool to use for build activities.
+- name: pool
+  type: object
+  default:
+    vmImage: 'ubuntu-latest'
+
+  # Specifies whether or not to publish pipeline scripts.
+  # In order to leverage custom scripts in a multi stage pipeline, this must be set to true.
+- name: pipelineScripts
+  type: string
+  default: ''
+
+  # Specifies the path of where the custom pipeline scripts reside.
+- name: pipelineScriptsPath
+  type: string
+  default: 'devops/pipelines/scripts'
+
+  # Specifies the list of steps to execute before publishing the arm template.
+  # If this parameter is empty, then no pre-publish steps are performed.
+- name: prePublishSteps
+  type: stepList
+  default: []
+
+  # Specifies the path to the file or directory to publish.
+- name: publishPath
+  type: string
+  default: $(sourcePath)
+
+  # Specifies the name of the artifact that is created.
+- name: artifactName
+  type: string
+  default: $(artifactName)
+
+################################################################################
+# BUILD STAGE
+################################################################################
+
+stages:
+  # The build stage is the first logical boundary in an ARM template pipeline.
+- stage: build
+  displayName: 'Build'
+
+  # Series of steps that are executed sequentially as a unit.
+  # This is the smallest unit of work that represents the build of an ARM template.
+  jobs:
+  - job: build
+    displayName: 'Build'
+
+    # The agent pool associated with the build.
+    pool:
+      ${{ insert }}: ${{ parameters.pool }}
+
+    # The sequence of steps that make up the build.
+    steps:
+      # If pipeline scripts are supplied to the template, they are copied
+      # over to the staging directory so that they can be published.
+    - ${{ if ne(parameters.pipelineScripts, '') }}:
+      - task: CopyFiles@2
+        displayName: 'Copy Pipeline Scripts to Staging Directory'
+        inputs:
+          SourceFolder: ${{ parameters.pipelineScriptsPath }}
+          Contents: ${{ parameters.pipelineScripts }}
+          TargetFolder: '$(Build.ArtifactStagingDirectory)/scripts'
+          CleanTargetFolder: true
+          OverWrite: true
+          flattenFolders: false
+
+      # The ARM template is copied over to the staging directory so that
+      # it can be published.
+    - task: CopyFiles@2
+      displayName: 'Copy ARM Template to Staging Directory'
+      inputs:
+        SourceFolder: ${{ parameters.publishPath }}
+        Contents: 'azuredeploy.json'
+        TargetFolder: $(Build.ArtifactStagingDirectory)
+        CleanTargetFolder: false
+        OverWrite: true
+        flattenFolders: true
+
+      # Execute pre-publish steps, if required.
+    - ${{ parameters.prePublishSteps }}
+
+      # Publish Pipeline Artifacts
+      # The ARM template is published so that it can be consumed in multi stage pipelines.
+    - publish: $(Build.ArtifactStagingDirectory)
+      displayName: 'Publish Pipeline Artifacts'
+      artifact: ${{ parameters.artifactName }}

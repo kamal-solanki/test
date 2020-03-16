@@ -1,0 +1,91 @@
+################################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: microservices-variables
+#
+# This template contains variables that are shared acrosss all microservices
+# pipelines. These variables can be overwritten in the pipelines.
+################################################################################
+
+variables:
+- template: variables.yml
+
+  # Specifies the name of the Docker Image associated with the microservice.
+- name: imageName
+  value: 'pwsh: "{0}/microservices/{1}" -f "$(projectName)".ToLower(), "$(Build.DefinitionName)"'
+
+  # Specifies the source path where the microservice source code resides.
+  # Since the name of the pipeline is identical to the name of the microservice,
+  # a predefined variable (e.g. Build.DefinitionName) is used to fill out the path.
+- name: sourcePath
+  value: 'microservices/$(Build.DefinitionName)'
+
+  # Specifies the path of the Helm Chart associated with the microservice.
+- name: chartPath
+  value: 'devops/helm-charts/$(Build.DefinitionName)'
+
+  # Specifies the name of the Helm Chart associated with the microservice.
+- name: chartName
+  value: 'pwsh: "{0}-{1}" -f "$(projectName)".ToLower(), "$(Build.DefinitionName)"'
+
+  # Specifies the prefix of the secret names in the Key Vauklt.
+  # Since the Key Vault is shared across multiple projects and environments, the prefix is used
+  # as a unique identifier for each secret.
+- name: secretPrefix
+  value: '$(environmentPrefix)-$(projectName)'
+
+  # Specifies the port the microservice listens on.
+  # This is used by the Azure Kubernetes Service liveness and readiness probes.
+- name: servicePort
+  value: '3000'
+
+  # Specifies the Azure Event Hubs namespace endpoint the microservice connects to.
+- name: eventHubsEndpoint
+  value: '$(environmentPrefix)EVENTHUBS01.servicebus.windows.net:9093'
+
+  # Specifies data model identifier. This is usually derived from the name of the pipeline.
+  # This represents the partial database name associated with the microservice.
+- name: dataModelId
+  value: 'pwsh: "$(Build.DefinitionName)".Replace("-service", "").ToUpper()'
+
+  # Specifies the name of the secret in Key Vault that contains the connection string
+  # to the microservice Azure SQL database. This secret is created as part of the Azure SQL Elastic
+  # Pool Database setup pipeline.
+- name: databaseConnectionStringSecretName
+  value: '$(secretPrefix)-$(dataModelId)-SVC-SQLDB-CS'
+
+  # Specifies the name of the secret in Key Vault that contains the connection string
+  # to the ingestion consumer Event Hub. This secret is created as part of the Event Hubs
+  # setup pipeline.
+- name: consumerConnectionStringSecretName
+  value: '$(secretPrefix)-INGESTION-CONSUMER-EHB-CS'
+
+  # Specifies the name of the secret in Key Vault that contains the connection string
+  # to the ingestion producer Event Hub. This secret is created as part of the Event Hubs
+  # setup pipeline.
+- name: producerConnectionStringSecretName
+  value: '$(secretPrefix)-INGESTION-PRODUCER-EHB-CS'
+
+  # Specifies any additional Helm Chart environment values.
+- name: additionalChartEnvValues
+  value: '{}'
+
+  # Specifies the values required for the microservices' Helm Chart.
+- name: chartValues
+  value: >-
+    {
+      "replicaCount": "$(replicaCount)",
+      "keyVault.enabled": true,
+      "keyVault.name": "$(keyVaultName)",
+      "keyVault.volumeName": "$(Build.DefinitionName)-kv-volume",
+      "keyVault.tenantId": "$(tenantId)",
+
+      "env": [
+        { "name": "PORT", "value": "$(servicePort)" },
+        { "name": "DB_CONNECTION_STRING", "value": "/kvmnt/$(databaseConnectionStringSecretName)" },
+        { "name": "CONSUMER_BROKER_LIST", "value": "$(eventHubsEndpoint)" },
+        { "name": "PRODUCER_BROKER_LIST", "value": "$(eventHubsEndpoint)" },
+        { "name": "CONSUMER_CONNECTION_STRING", "value": "/kvmnt/$(consumerConnectionStringSecretName)" },
+        { "name": "PRODUCER_CONNECTION_STRING", "value": "/kvmnt/$(producerConnectionStringSecretName)" },
+        $(additionalChartEnvValues)
+      ]
+    }

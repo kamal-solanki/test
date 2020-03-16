@@ -1,0 +1,288 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: microservices-ci-stage
+#
+# This generic template defines the steps required to build a microservice.
+# It is intended to be used by all microservices pipeleines.
+###############################################################################
+
+parameters:
+  # Specifies the agent pool to use for build activities.
+- name: pool
+  type: object
+  default:
+    vmImage: 'ubuntu-latest'
+
+  # Specifies the source path of the microservice Docker Image to build.
+- name: sourcePath
+  type: string
+  default: $(sourcePath)
+
+  # Specifies the path of the Helm Chart to package and publish.
+- name: chartPath
+  type: string
+  default: $(chartPath)
+
+  # Specifies the name of the Helm Chart.
+- name: chartName
+  type: string
+  default: $(chartName)
+
+  # Specifies whether or not to enable Docker BuildKit mode. Enabling this feature speeds up the build process.
+  # A value of '1' denotes enabled and a value of '0' denotes disabled.
+- name: dockerBuildKit
+  type: number
+  default: 1
+
+  # Specifices the Azure Service Connection to use when authenticating with the Azure Container Registry (ACR).
+- name: azServiceConnection
+  type: string
+
+  # Specifies the name of the Azure Container Registry (ACR) to push the image to.
+  # Please note that '.azurecr.io' is automatically appended to this name wherever a fully qualified name is required.
+- name: registryName
+  type: string
+
+  # Specifies the Docker Image name associated with the microservice build.
+- name: imageName
+  type: string
+  default: $(imageName)
+
+  # Specifies the version of the Docker Image and Helm Chart.
+- name: version
+  type: string
+  default: $(version)
+
+  # Specifies the path of the test results directory.
+- name: testResultsPath
+  type: string
+  default: '$(Common.TestResultsDirectory)/reports'
+
+  # Specifies the path to the file or directory to publish.
+- name: publishPath
+  type: string
+  default: $(Build.ArtifactStagingDirectory)
+
+  # Specifies the name of the artifact that is created.
+- name: artifactName
+  type: string
+  default: $(artifactName)
+
+################################################################################
+# BUILD STAGE
+################################################################################
+
+stages:
+
+# The build stage is the first logical boundary in a microservice pipeline.
+- stage: build
+  displayName: 'Build'
+
+  # Series of steps that are executed sequentially as a unit. This is the smallest unit of work that represents the build of a microservice.
+  jobs:
+  - job: build
+    displayName: 'Build'
+
+    # The agent pool associated with the build.
+    pool:
+      ${{ insert }}: ${{ parameters.pool }}
+
+    # Global variables associated with the build stage.
+    variables:
+      # Environment variable used by Docker to determine whether or not to enable BuildKit mode.
+      DOCKER_BUILDKIT: ${{ parameters.dockerBuildKit }}
+
+      # Environment variable used to determine where the typescript module is located.
+      # This is required for SonarQube's Analyzer.
+      NODE_PATH: '/usr/local/lib/node_modules'
+
+    # The sequence of steps that make up the build.
+    steps:
+      # Transforms pipelines variables using PowerShell expressions.
+    - task: PowerShell@2
+      displayName: 'Transform Pipeline Variables'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Get-ChildItem Env:* | % {
+            if ($_.Value.StartsWith("pwsh: ")) {
+              $result = Invoke-Expression $_.Value.Replace("pwsh: ", "")
+              if ($result -ne $_.Value) {
+                Write-Host ("##vso[task.setvariable variable=$($_.Name);]$result")
+              }
+            }
+          }
+        pwsh: true
+
+      # npm Authenticate
+      # Enables npm to authenticate with Azure Artifacts feed.
+      # The .npmrc file is updated with a Just-in-Time Personal Access Token (PAT).
+    - task: npmAuthenticate@0
+      displayName: 'npm Authenticate'
+      inputs:
+        workingFile: '${{ parameters.sourcePath }}/.npmrc'
+
+      # Update version in package.json
+    - task: PowerShell@2
+      displayName: 'Update Package Version'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $packageJson = Get-Content -Path "${{ parameters.sourcePath }}/package.json" | ConvertFrom-Json
+          $packageJson.version = "${{ parameters.version }}"
+          $packageJson | ConvertTo-Json -Depth 100  | Set-Content -Path "${{ parameters.sourcePath }}/package.json"
+          Get-Content -Path "${{ parameters.sourcePath }}/package.json"
+        pwsh: true
+
+      # Builds the Docker Image in development mode so that unit tests can run against it.
+      # Dev dependencies are packaged in this build.
+    - task: Docker@1
+      displayName: 'Build Docker Image (Development)'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: Build an image
+        arguments:  >-
+          --build-arg NODE_ENV=development
+          --progress=plain
+          --secret id=npm,src=${{ parameters.sourcePath }}/.npmrc
+        dockerFile: '${{ parameters.sourcePath }}/Dockerfile'
+        imageName: '${{ parameters.imageName }}:${{ parameters.version }}'
+
+      # Run Unit Tests & Collect Code Coverage
+      # Runs the Docker Image built in the previous step and volume mounts the reports folder to the host.
+      # Unit tests and code coverage reports are generated in this step.
+    - task: Docker@1
+      displayName: 'Run Unit Tests & Collect Code Coverage'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: 'Run an image'
+        arguments: '-u 0'
+        containerCommand: 'npm run test-ci'
+        imageName: '${{ parameters.imageName }}:${{ parameters.version }}'
+        qualifyImageName: true
+        volumes: '${{ parameters.testResultsPath }}:/home/node/app/reports'
+        runInBackground: false
+
+      # Publishes the unit test results generated in the previous step to Azure DevOps.
+      # Once the results are published, the 'Tests' tab on the pipeline results page is visible.
+    - task: PublishTestResults@2
+      displayName: 'Publish Unit Test Results'
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: 'junit.xml'
+        searchFolder: '${{ parameters.testResultsPath }}'
+        mergeTestResults: true
+        failTaskOnFailedTests: true
+        testRunTitle: 'Unit Tests'
+
+      # Publishes the code coverage results collected in the previous step to Azure DevOps.
+      # Once the results are published, the 'Code Coverage' tab on the pipeline results page is visible.
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish Code Coverage Results'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '${{ parameters.testResultsPath }}/cobertura-coverage.xml'
+        pathToSources: ${{ parameters.sourcePath }}
+        failIfCoverageEmpty: true
+
+      # Prepares code coverage and unit tests reports for SonarQube to process.
+      # Since these reports are generated inside the Docker container, the absolute path references are updated to reflect
+      # that of those on the build pipeline agent.
+    - script: |
+        sudo npm install -g typescript
+        sudo sed -i 's@^SF:/home/node/app/src/@SF:$(Build.SourcesDirectory)/${{ parameters.sourcePath }}/src/@' ${{ parameters.testResultsPath }}/lcov.info
+        sudo sed -i 's@/home/node/app/src/@$(Build.SourcesDirectory)/${{ parameters.sourcePath }}/src/@g' ${{ parameters.testResultsPath }}/jest-sonar-reporter.xml
+      displayName: 'Prepare Reports for SonarQube'
+
+      # Prepare SonarQube Analysis
+      # The microservices source code is prepared for static code analysis.
+    - task: SonarQubePrepare@4
+      displayName: 'Prepare SonarQube Analysis'
+      inputs:
+        SonarQube: 'SonarQubeServiceConnection'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: ${{ parameters.imageName }}
+        cliProjectName: ${{ parameters.imageName }}
+        cliSources: '${{ parameters.sourcePath }}/src'
+        extraProperties: |
+          sonar.javascript.lcov.reportPaths=${{ parameters.testResultsPath }}/lcov.info
+          sonar.testExecutionReportPaths=${{ parameters.testResultsPath }}/jest-sonar-reporter.xml
+          sonar.eslint.reportPaths=${{ parameters.testResultsPath }}/eslint-report.json
+          sonar.tests=${{ parameters.sourcePath }}/src
+          sonar.test.inclusions=**/*.spec.ts
+
+      # Run SonarQube Analysis & Publish Results
+      # Runs the SonarQube scanner and publishes the results to the SonarQube server.
+    - task: SonarQubeAnalyze@4
+      displayName: 'Run SonarQube Analysis & Publish Results'
+
+      # Publish SonarQube's Quality Gate Result
+      # Publishes SonarQube's Quality Gate Result to Azure DevOps' pipelines view.
+    - task: SonarQubePublish@4
+      displayName: 'Publish SonarQube Quality Gate Result'
+      inputs:
+        pollingTimeoutSec: '300'
+
+      # Builds the Docker Image in Production Mode.
+    - task: Docker@1
+      condition: eq(1,2)
+      displayName: 'Build Docker Image (Production)'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: Build an image
+        arguments:  >-
+          --progress=plain
+          --secret id=npm,src=${{ parameters.sourcePath }}/.npmrc
+        dockerFile: '${{ parameters.sourcePath }}/Dockerfile'
+        imageName: '${{ parameters.imageName }}:${{ parameters.version }}'
+
+      # Download and install the latest Helm client on the fly.
+    - task: HelmInstaller@1
+      displayName: 'Install Helm Client'
+      inputs:
+        helmVersionToInstall: '3.0.2'
+
+      # Use the Helm client to package the Helm Chart associated with the Docker Image.
+    - task: HelmDeploy@0
+      displayName: 'Package Helm Chart'
+      inputs:
+        command: package
+        chartPath: ${{ parameters.chartPath }}
+        chartVersion: ${{ parameters.version }}
+        save: false
+        arguments: '--app-version ${{ parameters.version }}'
+
+      # Push Docker Image to Azure Container Registry (ACR)
+      # Once the Docker Image has been built and validated, it is pushed to the ACR.
+    - task: Docker@1
+      displayName: 'Push Docker Image to ACR'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: Push an image
+        imageName: ${{ parameters.imageName }}
+
+      # Push Helm Chart to Azure Container Registry (ACR)
+      # The az cli is used to push the Helm Chart to the ACR.
+    - task: AzureCLI@2
+      displayName: 'Push Helm Chart to ACR'
+      inputs:
+        azureSubscription: ${{ parameters.azServiceConnection }}
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        failOnStandardError: true
+        inlineScript: 'az acr helm push -n ${{ parameters.registryName }} $(Build.ArtifactStagingDirectory)/${{ parameters.chartName }}-${{ parameters.version }}.tgz --force'
+
+      # Publish Pipeline Artifacts
+      # The Dockerfile is published and can be consumed in multi stage pipelines.
+    - publish: ${{ parameters.publishPath }}
+      displayName: 'Publish Pipeline Artifacts'
+      artifact: ${{ parameters.artifactName }}

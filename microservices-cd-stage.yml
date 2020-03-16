@@ -1,0 +1,207 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: microservices-cd-stage
+#
+# This generic template defines the steps required to deploy a microservice.
+# It is intended to be used by all microservices pipeleines.
+###############################################################################
+
+parameters:
+  # Specifies the agent pool to use for deployment activities.
+- name: pool
+  type: object
+  default:
+    vmImage: 'ubuntu-latest'
+
+  # Specifies the stage details for the pipeline (e.g. name and id).
+- name: stage
+  type: object
+
+  # Specifies the variables for the pipeine.
+- name: variables
+  type: object
+
+  # Specifies the prefix of the environment.
+  # This is used to construct environment specific parameters.
+- name: environmentPrefix
+  type: string
+
+  # Specifies the name of the Helm Chart.
+- name: chartName
+  type: string
+  default: $(chartName)
+
+  # Specifies the Azure Service Connection to use when authenticating with the Azure Container Registry (ACR).
+- name: azServiceConnection
+  type: string
+
+  # Specifies the name of the Azure Container Registry (ACR) to push the image to.
+  # Please note that '.azurecr.io' is automatically appended to this name wherever a fully qualified name is required.
+- name: registryName
+  type: string
+
+  # Specifies the Docker Image name associated with the Helm Chart.
+- name: imageName
+  type: string
+  default: $(imageName)
+
+  # Specifies the name of the Azure Kubernetes Cluster (AKS) to deploy to.
+- name: aksClusterName
+  type: string
+
+  # Specifies the name of the resource group where the Azure Kubernetes Cluster (AKS) resides.
+- name: aksClusterResourceGroupName
+  type: string
+
+  # Specifies the values associated with Helm Chart.
+- name: chartValues
+  type: string
+  default: $(chartValues)
+
+  # Specifies the name of Key Vault that contains the secrets.
+- name: keyVaultName
+  type: string
+
+  # Specifies the number of replicas to deploy.
+- name: replicaCount
+  type: number
+  default: 1
+
+  # Specifies the name of the namespace the microservice should be deployed into.
+- name: namespaceName
+  type: string
+
+  # Specifies the version of the Docker Image and Helm Chart.
+- name: version
+  type: string
+  default: $(version)
+
+################################################################################
+# DEPLOY STAGE
+################################################################################
+
+stages:
+
+  # Deployment stage details
+  - ${{ insert }}: ${{ parameters.stage }}
+
+    # Variables associated with the microservices pipeline.
+    variables:
+      environmentPrefix: ${{ parameters.environmentPrefix }}
+      keyVaultName: ${{ parameters.keyVaultName }}
+      replicaCount: ${{ parameters.replicaCount }}
+      ${{ insert }}: ${{ parameters.variables }}
+
+    jobs:
+    - deployment: deploy
+      displayName: 'Deploy'
+
+      # The agent pool associated with the deployment.
+      pool:
+        ${{ insert }}: ${{ parameters.pool }}
+
+      # The environment or its resource that is targeted by the deployment job.
+      environment: ${{ parameters.stage.displayName }}
+      strategy:
+        # Default deployment strategy. Simple run once execution.
+        runOnce:
+          # The deployment block of the pipeline.
+          deploy:
+          # The steps that make up the deployment.
+            steps:
+              # Skip pipeline download artifacts step.
+              # The Docker Image and Helm Chart are retrieved from the Azure Container Registry (ACR).
+            - download: none
+
+              # Download and install the latest Helm client on the fly.
+            - task: HelmInstaller@1
+              displayName: 'Install Helm Client'
+              inputs:
+                helmVersionToInstall: '3.0.2'
+
+              # Adds the Helm Chart repository from the Azure Container Registry (ACR) through the Helm CLI.
+              # This step ensures that the latest Helm Chart references are fetched.
+            - task: AzureCLI@2
+              displayName: 'Synchronize Helm Repository'
+              inputs:
+                azureSubscription: ${{ parameters.azServiceConnection }}
+                scriptType: 'pscore'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  az acr helm repo add -n ${{ parameters.registryName }}
+                  $tenantId = $(az account show --query 'tenantId' --output tsv)
+                  Write-Host "##vso[task.setvariable variable=tenantId;issecret=true]$tenantId"
+
+              # Transforms pipelines variables using PowerShell expressions.
+            - task: PowerShell@2
+              displayName: 'Transform Pipeline Variables'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  Get-ChildItem Env:* | % {
+                    if ($_.Value.StartsWith("pwsh: ")) {
+                      $result = Invoke-Expression $_.Value.Replace("pwsh: ", "")
+                      if ($result -ne $_.Value) {
+                        Write-Host ("##vso[task.setvariable variable=$($_.Name);]$result")
+                      }
+                    }
+                  }
+                pwsh: true
+
+              # Install the Helm Chart on the Azure Kubernetes Cluster (AKS) using the Upgrade command.
+              # NOTE: This is a custom built task that aids in the transformation of chart values.
+            - task: HelmDeploymentCustom@1
+              displayName: 'Install Helm Chart'
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscription: ${{ parameters.azServiceConnection }}
+                azureResourceGroup: ${{ parameters.aksClusterResourceGroupName }}
+                kubernetesCluster: ${{ parameters.aksClusterName }}
+                useClusterAdmin: true
+                namespace: ${{ parameters.namespaceName }}
+                command: 'upgrade'
+                chartType: 'Name'
+                chartName: '${{ parameters.registryName }}/${{ parameters.chartName }}'
+                releaseName: ${{ parameters.chartName }}
+                imageName: '${{ parameters.registryName }}.azurecr.io/${{ parameters.imageName }}:${{ parameters.version }}'
+                overrideValues: ${{ parameters.chartValues }}
+                arguments: '--version "${{ parameters.version }}"'
+                force: false
+
+              # If the Helm deployment failed, output the AKS events.
+              # Events will be output for all pods as there is no compatible
+              # method for filtering results.
+              # This task will be skipped if the Helm deployment succeeded.
+            - task: Kubernetes@1
+              displayName: 'Display AKS Events'
+              condition: failed()
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+                azureResourceGroup: ${{ parameters.aksClusterResourceGroupName }}
+                kubernetesCluster: ${{ parameters.aksClusterName }}
+                useClusterAdmin: true
+                namespace: ${{ parameters.namespaceName }}
+                command: get
+                arguments: events
+
+              # If the Helm deployment failed, output the AKS pod logs.
+              # The pods are identified by using a selector name set to the
+              # pod's chart/release name.
+              # Using the `--tail=-1` argument will retrieve all log lines
+              # instead of just the last 10.
+              # This task will be skipped if the Helm deployment succeeded.
+            - task: Kubernetes@1
+              displayName: 'Display AKS Pod Logs'
+              condition: failed()
+              inputs:
+                connectionType: 'Azure Resource Manager'
+                azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+                azureResourceGroup: ${{ parameters.aksClusterResourceGroupName }}
+                kubernetesCluster: ${{ parameters.aksClusterName }}
+                useClusterAdmin: true
+                namespace: ${{ parameters.namespaceName }}
+                command: logs
+                arguments: >-
+                  --selector app.kubernetes.io/name=${{ parameters.chartName }}
+                  --tail=-1

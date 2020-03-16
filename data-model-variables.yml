@@ -1,0 +1,35 @@
+################################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: data-model-variables
+#
+# This template contains variables that are shared acrosss all data model
+# pipelines. These variables can be overwritten in the pipelines.
+################################################################################
+
+variables:
+- template: variables.yml
+
+  # Specifies the name of the data model project.
+  # Uses PowerShell expressions to build the project name from the name of the pipeline. (e.g. applicant-domain -> ApplicantDomain)
+- name: dataModelName
+  value: 'pwsh: "{0}{1}" -f "$(Build.DefinitionName)".Substring(0, 1).ToUpper(), "$(Build.DefinitionName)".Substring(1).Replace("-data-model", "Domain")'
+
+  # Specifies the source path where the data model source code resides.
+- name: sourcePath
+  value: 'data-models/$(dataModelName)'
+
+  # Specifies the path of the data model's SQL project file.
+- name: projectFilePath
+  value: '$(sourcePath)/$(dataModelName).sqlproj'
+
+  # Specifies the path of the DACPAC artifact to deploy.
+- name: dacpacFilePath
+  value: '$(Pipeline.Workspace)/$(artifactName)/$(dataModelName).dacpac'
+
+  # Specifies the fully qualified name of the Azure SQL server to deploy to.
+- name: serverName
+  value: 'pwsh: "{0}SQLSV{1}SERVICESPS01.database.windows.net" -f "$(environmentPrefix)", "$(projectName)"'
+
+  # Specifies the Azure SQL database to deploy to.
+- name: databaseName
+  value: 'pwsh: "{0}SQLDB{1}{2}PS01" -f "$(environmentPrefix)", "$(projectName)", "$(Build.DefinitionName)".Replace("-data-model", "").ToUpper()'

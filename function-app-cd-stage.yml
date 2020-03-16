@@ -1,0 +1,155 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: function-app-cd-stage (TEMPLATE)
+#
+# This generic template defines the steps required to deploy a Function App.
+# It is intended to be used by all Function App pipeleines.
+###############################################################################
+
+parameters:
+  # Specifies the agent pool to use for deployment activities.
+- name: pool
+  type: object
+  default:
+    vmImage: 'ubuntu-latest'
+
+  # Specifies the stage details for the pipeline (e.g. name and id).
+- name: stage
+  type: object
+
+  # Specifies the variables for the pipeine.
+- name: variables
+  type: object
+  default: {}
+
+  # Specifies the Azure Service Connection to use when authenticating with the Azure.
+- name: azServiceConnection
+  type: string
+
+  # Specifies the name of the resource group the ARM template should target.
+- name: resourceGroupName
+  type: string
+
+  # Specifies the deployment mode for the ARM template (e.g. Incremental or Complete).
+- name: deploymentMode
+  type: string
+  default: 'Incremental'
+
+  # Specifies the name of the ARM template deployment.
+- name: deploymentName
+  type: string
+  default: $(artifactName)
+
+  # Specifies the name of the ARM template.
+- name: templateName
+  type: string
+  default: $(Build.DefinitionName)
+
+  # Specifies path to the ARM template.
+- name: templateFilePath
+  type: string
+  default: '$(Pipeline.Workspace)/$(artifactName)/azuredeploy.json'
+
+  # Specifies the name of the Function App to be deployed.
+- name: functionAppName
+  type: string
+  default: $(functionAppName)
+
+  # Specifies the name of Key Vault that contains the secrets.
+  # If this parameter is empty, the corresponding step is skipped.
+- name: keyVaultName
+  type: string
+  default: ''
+
+  # Specifies the list of steps to execute post deployment of the ARM template.
+  # If this parameter is empty, then no post deployment steps are executed.
+- name: postDeploymentSteps
+  type: stepList
+  default: []
+
+################################################################################
+# DEPLOY STAGE
+################################################################################
+
+stages:
+
+  # Deployment stage details
+  - ${{ insert }}: ${{ parameters.stage }}
+
+    # Variables associated with the ARM template pipeline.
+    variables:
+      ${{ insert }}: ${{ parameters.variables }}
+
+    jobs:
+      - deployment: deploy
+        displayName: 'Deploy'
+
+        # The agent pool associated with the deployment.
+        pool:
+          ${{ insert }}: ${{ parameters.pool }}
+
+        # The environment or its resource that is targeted by the deployment job.
+        environment: ${{ parameters.stage.displayName }}
+        strategy:
+
+          # Default deployment strategy. Simple run once execution.
+          runOnce:
+
+            # The deployment block of the pipeline.
+            deploy:
+
+              # The steps that make up the deployment.
+              steps:
+
+                # Downloads the ARM template that needs to be deployed.
+              - download: current
+                displayName: 'Download Pipeline Artifacts'
+
+                # Transforms pipelines variables using PowerShell expressions.
+              - task: PowerShell@2
+                displayName: 'Transform Pipeline Variables'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Get-ChildItem Env:* | % {
+                        if ($_.Value.StartsWith("pwsh: ")) {
+                          $result = Invoke-Expression $_.Value.Replace("pwsh: ", "")
+                          if ($result -ne $_.Value) {
+                            Write-Host ("##vso[task.setvariable variable=$($_.Name);]$result")
+                          }
+                        }
+                    }
+                  pwsh: true
+
+                # Retrieve secrets from Azure Key Vault.
+                # Variable names that start with the prefix 'keyvault-' will be bound as secrets.
+              - ${{ if ne(parameters.keyVaultName, '') }}:
+                - task: AzureKeyVaultCustom@1
+                  displayName: 'Retrieve Azure Key Vault Secrets'
+                  inputs:
+                    azureSubscription: ${{ parameters.azServiceConnection }}
+                    keyVaultName: ${{ parameters.keyVaultName }}
+
+                # Deploys the ARM template with the accompanying parameters.
+                # NOTE: This is a custom built task that facilates the deployment of ARM templates.
+              - task: AzureDeploymentCustom@1
+                displayName: 'Deploy Azure Resource Manager Template'
+                inputs:
+                  azureSubscription: ${{ parameters.azServiceConnection }}
+                  resourceGroupName: ${{ parameters.resourceGroupName }}
+                  templateName: ${{ parameters.templateName }}
+                  templateFilePath: ${{ parameters.templateFilePath }}
+                  deploymentMode: ${{ parameters.deploymentMode }}
+                  deploymentName: ${{ parameters.deploymentName }}
+
+
+              - task: AzureFunctionApp@1
+                displayName: 'Deploy Function App'
+                inputs:
+                  azureSubscription: ${{ parameters.azServiceConnection }}
+                  appType: functionApp
+                  appName: ${{ parameters.functionAppName }}
+                  package: $(Pipeline.Workspace)/$(artifactName)/*.zip
+
+                # Execute post-deployment steps, if required.
+              - ${{ parameters.postDeploymentSteps }}

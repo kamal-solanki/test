@@ -1,0 +1,124 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: docker-image-ci-stage
+#
+# This generic template defines the steps required to build a Docker Image.
+# It is intended to be used by all Docker Image pipelines.
+###############################################################################
+
+################################################################################
+# MANDATORY TEMPLATE PARAMETERS
+################################################################################
+
+parameters:
+
+  # Specifies the agent pool to use for build activities.
+  - name: pool
+    type: object
+    default:
+      vmImage: 'ubuntu-latest'
+
+  # Specifies the source path of the microservice docker image to build.
+  - name: sourcePath
+    type: string
+    default: $(sourcePath)
+
+  # Specifies whether or not to enable Docker BuildKit mode. Enabling this feature speeds up the build process.
+  # A value of '1' denotes enabled and a value of '0' denotes disabled.
+  - name: dockerBuildKit
+    type: number
+    default: 1
+
+  # Specifices the Azure Service Connection to use when authenticating with the Azure Container Registry (ACR).
+  - name: azServiceConnection
+    type: string
+
+  # Specifies the name of the Azure Container Registry (ACR) to push the image to.
+  # Please note that '.azurecr.io' is automatically appended to this name wherever a fully qualified name is required.
+  - name: registryName
+    type: string
+
+  # Specifies the Docker image name associated with the microservice build.
+  - name: imageName
+    type: string
+    default: $(imageName)
+
+  # Specifies the version of the Docker Image and Helm Chart.
+  - name: version
+    type: string
+    default: $(version)
+
+  # Specifies the path to the file or folder to publish.
+  - name: publishPath
+    type: string
+    default: $(Build.ArtifactStagingDirectory)
+
+  # Specifies the name of the artifact that is created.
+  - name: artifactName
+    type: string
+    default: $(artifactName)
+
+  # Specifies the list of steps to execute prior to building a Docker Image.
+  # If this parameter is empty, then no pre-build steps are executed.
+  - name: preBuildSteps
+    type: stepList
+    default: []
+
+################################################################################
+# BUILD STAGE
+################################################################################
+
+stages:
+
+# The build stage is the first logical boundary in a Docker Image pipeline.
+- stage: build
+  displayName: 'Build'
+
+  # Series of steps that are executed sequentially as a unit. This is the smallest unit of work that represents the build of a Docker Image.
+  jobs:
+  - job: build
+    displayName: 'Build'
+
+    # The agent pool associated with the build.
+    pool:
+      ${{ insert }}: ${{ parameters.pool }}
+
+    # Global variables associated with the build stage.
+    variables:
+      # Environment variable used by Docker to determine whether or not to enable BuildKit mode.
+      DOCKER_BUILDKIT: ${{ parameters.dockerBuildKit }}
+
+    # The sequence of steps that make up the build.
+    steps:
+
+    # Execute pre-build steps, if required.
+    - ${{ parameters.preBuildSteps }}
+
+    # Build Docker Image
+    # Builds the Docker Image from a Dockerfile and a context.
+    - task: Docker@1
+      displayName: 'Build Docker Image'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: Build an image
+        dockerFile: '${{ parameters.sourcePath }}/Dockerfile'
+        imageName: '${{ parameters.imageName }}:${{ parameters.version }}'
+
+    # Push Docker Image to Azure Container Registry (ACR)
+    # Once the Docker Image has been built and validated, it is pushed to the ACR.
+    - task: Docker@1
+      displayName: 'Push Docker Image to ACR'
+      inputs:
+        containerregistrytype: Azure Container Registry
+        azureSubscriptionEndpoint: ${{ parameters.azServiceConnection }}
+        azureContainerRegistry: '${{ parameters.registryName }}.azurecr.io'
+        command: Push an image
+        imageName: ${{ parameters.imageName }}
+
+    # Publish Pipeline Artifacts
+    # The Dockerfile is published and can be consumed in multi stage pipelines.
+    - publish: ${{ parameters.publishPath }}
+      displayName: 'Publish Pipeline Artifacts'
+      artifact: ${{ parameters.artifactName }}

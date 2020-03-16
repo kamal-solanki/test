@@ -1,0 +1,47 @@
+###############################################################################
+# Author: `Jensen (jemilraj@cmhc-schl.gc.ca)
+# Name: variables
+#
+# This generic template defines the shared variables that are used across
+# all pipelines.
+###############################################################################
+
+variables:
+
+  # Versioning is tied to the core branches in the Git Flow branching stategy.
+  # MAJOR version is incrememneted when incompatible API changes are made.
+  # MINOR version is incrememented when functionality is implemented in a backwards compatible manner.
+  # The MAJOR & MINOR versions will need to be maintained and adjusted based on the release cadence.
+  ${{ if eq(variables['Build.SourceBranchName'], 'master') }}:
+      major: 1
+      minor: 0
+
+  ${{ if eq(variables['Build.SourceBranchName'], 'develop') }}:
+      major: 0
+      minor: 0
+
+  ${{ if startsWith(variables['Build.SourceBranchName'], 'release') }}:
+      major: 1
+      minor: 0
+
+  ${{ if not(or(startsWith(variables['Build.SourceBranchName'], 'release'), eq(variables['Build.SourceBranchName'], 'develop'), eq(variables['Build.SourceBranchName'], 'master'))) }}:
+      major: 0
+      minor: 0
+
+  # PATCH version is incremented when backwards compatible bug fixes are made.
+  patch: $[counter(format('{0}.{1}.{2}', variables['major'], variables['minor'], variables['Build.Reason']), 1)]
+
+  # Semantic Version used by the pipelines.
+  version: $[format('{0}.{1}.{2}', variables['major'], variables['minor'], variables['patch'])]
+
+  # Name of the project.
+  projectName: 'HOBT'
+
+  # Name to use when publishing pipeline artifacts.
+  artifactName: $(Build.DefinitionName)-v$(version)
+
+  # The default directory where pipeline scripts are downloaded to.
+  scriptsDirectory: '$(Pipeline.Workspace)/$(artifactName)/scripts'
+
+  # Specifies the default environment prefix.
+  environmentPrefix: 'DEFAULT'

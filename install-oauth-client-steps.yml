@@ -1,0 +1,58 @@
+parameters:
+
+- name: installPath
+  type: string
+
+- name: version
+  type: string
+  default: '1.0.1'
+
+steps:
+  # Installs playwright browser dependencies on the agent.
+  # NOTE: Once the private agents are up, this step will be removed.
+- bash: |
+    which bash
+    sudo apt-get install -y libwoff1 \
+                       libopus0 \
+                       libwebp6 \
+                       libwebpdemux2 \
+                       libenchant1c2a \
+                       libgudev-1.0-0 \
+                       libsecret-1-0 \
+                       libhyphen0 \
+                       libgdk-pixbuf2.0-0 \
+                       libegl1 \
+                       libnotify4 \
+                       libxslt1.1 \
+                       libevent-2.1-6 \
+                       libgles2 \
+                       libgl1 \
+                       libegl1 \
+                       libvpx5 \
+                       libnss3 \
+                       libxss1 \
+                       libasound2 \
+                       libdbus-glib-1-2 \
+                       libxt6
+  displayName: 'Install playwright Browser Dependencies'
+
+  # Downloads the oauth-client npm package on the agent.
+  # This custom oauth-client npm package is hosted on the private
+  # Azure Artifacts npm feed.
+- task: DownloadPackage@1
+  displayName: 'Download oauth-client npm package'
+  inputs:
+    packageType: 'npm'
+    feed: '/fb021ad2-0a34-4991-aabd-9354ffbab5b0'
+    definition: '843c7dbb-1bcf-49af-8dfd-906e831363f4'
+    version: ${{ parameters.version }}
+    downloadPath: ${{ parameters.installPath }}
+
+  # Installs the oauth-client npm package on the agent.
+  # Once the oauth-client is installed, subsequent scripts can invoke
+  # it via: npm start <consent_url> <consent_login> <consent_login_password>.
+- task: Npm@1
+  displayName: 'Install oauth-client npm package'
+  inputs:
+    command: 'install'
+    workingDir: '${{ parameters.installPath }}/package'
